@@ -149,6 +149,7 @@ func resourceAwsLbTargetGroup() *schema.Resource {
 							Required: true,
 							ValidateFunc: validation.StringInSlice([]string{
 								"lb_cookie",
+								"source_ip",
 							}, false),
 						},
 						"cookie_duration": {
@@ -433,10 +434,6 @@ func resourceAwsLbTargetGroupUpdate(d *schema.ResourceData, meta interface{}) er
 			})
 		}
 
-		// In CustomizeDiff we allow LB stickiness to be declared for TCP target
-		// groups, so long as it's not enabled. This allows for better support for
-		// modules, but also means we need to completely skip sending the data to the
-		// API if it's defined on a TCP target group.
 		if d.HasChange("stickiness") && d.Get("protocol") != elbv2.ProtocolEnumTcp {
 			stickinessBlocks := d.Get("stickiness").([]interface{})
 			if len(stickinessBlocks) == 1 {
@@ -450,11 +447,13 @@ func resourceAwsLbTargetGroupUpdate(d *schema.ResourceData, meta interface{}) er
 					&elbv2.TargetGroupAttribute{
 						Key:   aws.String("stickiness.type"),
 						Value: aws.String(stickiness["type"].(string)),
-					},
-					&elbv2.TargetGroupAttribute{
+					})
+				if d.Get("protocol") != elbv2.ProtocolEnumTcp {
+					attrs = append(attrs, &elbv2.TargetGroupAttribute{
 						Key:   aws.String("stickiness.lb_cookie.duration_seconds"),
 						Value: aws.String(fmt.Sprintf("%d", stickiness["cookie_duration"].(int))),
 					})
+				}
 			} else if len(stickinessBlocks) == 0 {
 				attrs = append(attrs, &elbv2.TargetGroupAttribute{
 					Key:   aws.String("stickiness.enabled"),
@@ -724,15 +723,6 @@ func flattenAwsLbTargetGroupStickiness(d *schema.ResourceData, attributes []*elb
 
 func resourceAwsLbTargetGroupCustomizeDiff(diff *schema.ResourceDiff, v interface{}) error {
 	protocol := diff.Get("protocol").(string)
-	if protocol == elbv2.ProtocolEnumTcp {
-		// TCP load balancers do not support stickiness
-		if stickinessBlocks := diff.Get("stickiness").([]interface{}); len(stickinessBlocks) == 1 {
-			stickiness := stickinessBlocks[0].(map[string]interface{})
-			if val := stickiness["enabled"].(bool); val {
-				return fmt.Errorf("Network Load Balancers do not support Stickiness")
-			}
-		}
-	}
 
 	// Network Load Balancers have many special qwirks to them.
 	// See http://docs.aws.amazon.com/elasticloadbalancing/latest/APIReference/API_CreateTargetGroup.html
